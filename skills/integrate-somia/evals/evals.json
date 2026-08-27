@@ -1,0 +1,90 @@
+{
+  "skill_name": "integrate-somia",
+  "cases": [
+    {
+      "id": "custom-python-agent",
+      "prompt": "Add Somia monitoring to this custom Python agent.",
+      "expected": "Uses SomiaTrace + client.log_run; does not add SomiaCallbackHandler or somia[langgraph]."
+    },
+    {
+      "id": "log-run-trace-contract",
+      "prompt": "Instrument this agent with client.log_run and SomiaTrace.",
+      "expected": "Passes trace.to_dict() not the object; sets eval-eligible top-level input/output; uses SUCCESS/FAILED on log_run and OK/ERROR on the trace; prefers dict I/O."
+    },
+    {
+      "id": "curate-large-state",
+      "prompt": "Add Somia monitoring to this LangGraph agent whose state has many keys (query, messages, docs, scratchpad, final_answer).",
+      "expected": "Does not log the full state. Asks or proposes eval-eligible mapping (e.g. query in, final_answer out) plus debug-useful retrieve/LLM spans (doc ids not full docs); uses root_input_mapper/root_output_mapper or equivalent log_run fields."
+    },
+    {
+      "id": "obvious-io-no-ask",
+      "prompt": "Add Somia log_run to this function def reply(question: str) -> str.",
+      "expected": "Proceeds without asking; uses question as eval-eligible input and the string reply as scorable output."
+    },
+    {
+      "id": "multi-step-trace",
+      "prompt": "Add Somia monitoring to a multi-step agent (retrieve then answer).",
+      "expected": "Proposes or adds debug-useful spans for key steps, not root-only I/O only; keeps run input/output eval-eligible."
+    },
+    {
+      "id": "eval-after-monitor",
+      "prompt": "We already log query/final_answer with Somia. Add a local client.eval.",
+      "expected": "agent_fn uses the same input shape as monitored input; does not invent a conflicting contract."
+    },
+    {
+      "id": "langgraph-invoke",
+      "prompt": "Add Somia to this LangGraph agent that uses graph.invoke.",
+      "expected": "Adds SomiaCallbackHandler; merges callbacks into existing config; does not also call log_run on the same path."
+    },
+    {
+      "id": "langgraph-ainvoke",
+      "prompt": "Instrument our async LangGraph ainvoke path with Somia.",
+      "expected": "Keeps ainvoke; merges callbacks; does not convert to sync invoke."
+    },
+    {
+      "id": "langgraph-astream",
+      "prompt": "Log Somia runs for our graph.astream usage.",
+      "expected": "Preserves streaming; uses callback handler; does not collect the stream solely for logging unless asked."
+    },
+    {
+      "id": "existing-callbacks",
+      "prompt": "Wire Somia into this LangGraph app that already has callbacks.",
+      "expected": "Appends Somia handler; does not replace config or drop thread_id."
+    },
+    {
+      "id": "already-installed",
+      "prompt": "Add Somia monitoring.",
+      "expected": "If SomiaCallbackHandler or log_run already present on the path, verifies/repairs instead of duplicating."
+    },
+    {
+      "id": "eval-only",
+      "prompt": "Run a Somia evaluation of this agent against our dataset.",
+      "expected": "Uses client.eval with existing dataset/profile IDs; does not rewrite observability unless also requested; does not invent CRUD for criteria/sets."
+    },
+    {
+      "id": "missing-api-key",
+      "prompt": "Integrate Somia monitoring.",
+      "expected": "Documents SOMIA_API_KEY in .env.example; does not invent a real secret."
+    },
+    {
+      "id": "negative-langgraph-explain",
+      "prompt": "Explain how this StateGraph works.",
+      "expected": "Skill should not drive Somia installation; answer is about the graph only."
+    },
+    {
+      "id": "attach-feedback-thumbs",
+      "prompt": "After logging a run, attach thumbs-up feedback with a short comment to the Somia trace.",
+      "expected": "Uses result trace_id; client.traces.feedback.create for text/status; then feedback.update with score_type=boolean and score=1; does not pass scores to create."
+    },
+    {
+      "id": "historical-upload-io-feedback",
+      "prompt": "We have a CSV of past agent prompts, responses, and thumbs labels. Upload them into Somia.",
+      "expected": "Batch log_run with eval-eligible input/output, provenance metadata, and idempotency_key per row; attaches feedback via create+update when labels present; skips feedback when trace_id missing on idempotent replay; does not use SomiaCallbackHandler."
+    },
+    {
+      "id": "historical-upload-no-trace",
+      "prompt": "Upload historical interactions that only have prompt and response — no span trees.",
+      "expected": "Uploads via log_run with top-level I/O; uses run-only or a minimal root agent span; does not invent a fake multi-step span tree."
+    }
+  ]
+}

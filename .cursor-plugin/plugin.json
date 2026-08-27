@@ -1,0 +1,9 @@
+{
+  "name": "integrate-somia",
+  "version": "0.1.0",
+  "description": "Integrates the Somia Python SDK into agent repositories.",
+  "author": { "name": "Somia" },
+  "homepage": "https://somia-platform.com",
+  "license": "MIT",
+  "keywords": ["somia", "observability", "tracing", "evals", "langgraph"]
+}
