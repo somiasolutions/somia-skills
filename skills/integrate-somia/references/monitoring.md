@@ -4,8 +4,9 @@ One user-visible agent execution must produce **one Somia root run**.
 
 | Stack | Use | Do not use on the same path |
 | --- | --- | --- |
-| LangGraph / LangChain callbacks | `SomiaCallbackHandler` | manual `log_run` |
+| LangGraph / LangChain callbacks | `SomiaCallbackHandler` | manual `log_run` / `start_run` |
 | Everything else | `start_run` + `node_span` / `llm_span` / `tool_span` | `SomiaCallbackHandler` |
+| This agent calls another Somia agent / hosted pipeline | `link_child_pipeline_run` + `caller_*` | nested `start_run` as a second root; `SomiaCallbackHandler` for the composing hop |
 
 Always read `references/sdk-api.md` for exact signatures.
 
@@ -129,8 +130,6 @@ pip install "somia[langgraph]" --pre
 
 1. Build `SomiaClient` from env (see `references/setup.md`).
 2. Construct `SomiaCallbackHandler(client=..., agent_slug=..., ...)`.
-   - Use `ignore_nodes=[...]` to drop known framework-noise nodes from trace
-     analysis (for example `ModelCallLimitMiddleware`).
 3. **Merge** into existing config — never replace the whole `config` dict.
 4. Keep fail-open: missing env / import errors → log warning, run without Somia.
 5. Do **not** also call `client.log_run` for that same invocation (the handler
@@ -140,6 +139,11 @@ pip install "somia[langgraph]" --pre
    sequential invokes is fine.
 7. For multiturn grouping, set `session_id` (or `session_id_mapper`) on the
    handler so repeated invokes append traces to the same conversation run.
+8. `SomiaCallbackHandler` does **not** emit `pipeline_reference` links. If this
+   graph calls another Somia agent or hosted pipeline and the user wants that
+   child nested in Monitor, instrument the **parent path** with `start_run`
+   (not the callback) and follow "Composing agents" below. Do not dual-wire
+   callback + `start_run` on the same invoke.
 
 ### Merge pattern (required)
 
@@ -348,6 +352,100 @@ For uploading **past** runs/traces (CSV/DB backfill), see
 
 ---
 
+## C) Composing agents — `link_child_pipeline_run`
+
+Use when **this** agent calls another Somia agent (external `log_run` /
+`start_run`) or a hosted pipeline (`sessions.run`). The child is its own root
+run; the parent trace nests it in Monitor like a Reference Pipeline node.
+
+Nested `start_run` in the **same** process shares the outer run and does **not**
+create a child. Do not use it as the composition primitive.
+
+### Two sides
+
+| Side | API | Job |
+| --- | --- | --- |
+| Parent | `link_child_pipeline_run(run_id, pipeline_id=..., pipeline_version_id=...)` | Nest the child under the current span |
+| Child | `caller_pipeline_id` / `caller_agent_slug` / `caller_run_id` / `caller_span_id` on `start_run`, `log_run`, or `sessions.*` | Attribute the child run back to the caller |
+
+Use **both** when you control both sides. Link-only is enough if you only
+instrument the parent. `caller_*` values that cannot be resolved are dropped
+server-side — do not invent IDs.
+
+### Parent pattern
+
+Call `link_child_pipeline_run` **inside** the span that represents the child
+call, immediately after you have the child run id. Prefer the helper — do not
+hand-build `links` / `Span.add_link` dicts.
+
+```python
+from somia import link_child_pipeline_run, node_span, start_run
+
+run = start_run(payload, agent_slug="orchestrator")
+with node_span("call_retriever"):
+    child = client.sessions.run(agent_id=42, input_data=query)
+    link_child_pipeline_run(child.session_id, pipeline_id=42)
+    # hosted: session_id == the created run id
+    # external child: link_child_pipeline_run(child_result["run_id"])
+run.submit_success(output=...)
+```
+
+Template: `assets/python-pipeline-link-example.py`.
+
+Child run id:
+
+| Child kind | Where to get `run_id` |
+| --- | --- |
+| Hosted `sessions.run` / `create_session` | `response.session_id` |
+| External `client.log_run` | `result["run_id"]` |
+| External `start_run` in another process | that process’s `log_run` response `run_id` |
+
+### Child pattern (when you also instrument the callee)
+
+```python
+start_run(
+    payload,
+    agent_slug="retriever",
+    caller_agent_slug="orchestrator",
+    caller_run_id=parent_run_id,     # if known
+    caller_span_id=parent_span_id,   # if known
+)
+```
+
+Hosted equivalent: pass the same `caller_*` kwargs on `sessions.run` /
+`create_session` / `interact_session`.
+
+### Hard rules
+
+1. One root run **per agent**. A called agent is a child run, not a second
+   `log_run` on the parent path and not a nested `start_run`.
+2. Recursion is **per-hop**: A links B, B links C. Do not flatten C onto A’s
+   root.
+3. Fail-open: no active run → `link_child_pipeline_run` is a no-op.
+4. `SomiaCallbackHandler` does not grow these links. The composing parent path
+   must use `start_run`.
+5. Still do not dual-instrument the same path with callback + `start_run`.
+
+### Anti-patterns
+
+```python
+# WRONG — nested start_run is not a child agent
+outer = start_run(payload, agent_slug="orchestrator")
+inner = start_run(payload, agent_slug="retriever")  # shares outer; no second log_run
+inner.submit_success(...)
+outer.submit_success(...)
+
+# WRONG — hand-built link dicts
+span.add_link({"attributes": {"kind": "pipeline_reference", ...}})
+
+# WRONG — linking outside the child-call span (attaches to the wrong step)
+link_child_pipeline_run(child_run_id)
+with node_span("call_retriever"):
+    ...
+```
+
+---
+
 ## Recommended metadata (conventions)
 
 `metadata` on `log_run` / the handler is an **arbitrary dict**. Suggested keys:
@@ -360,7 +458,8 @@ For uploading **past** runs/traces (CSV/DB backfill), see
 
 Top-level API fields (not metadata): `agent_slug`, `agent_version`, `status`,
 `latency_ms`, `tokens`, `tags`, `environment`, `end_user_id`, `occurred_at`,
-`session_id`, `idempotency_key`.
+`session_id`, `idempotency_key`, `caller_pipeline_id`, `caller_agent_slug`,
+`caller_run_id`, `caller_span_id`.
 
 Never put API keys, auth headers, or unnecessary PII in `input`, `output`, or
 `metadata`. See `references/privacy-and-security.md`.
@@ -373,4 +472,7 @@ If `SomiaCallbackHandler` or `log_run` is already present on the target path:
 
 1. Do not add a second root instrumentation.
 2. Fix merge/fail-open/env issues if broken.
-3. Run `scripts/verify_integration.py --offline`.
+3. If the agent already calls another Somia agent/pipeline and links are missing,
+   add `link_child_pipeline_run` (parent must be `start_run` — do not add a
+   second handler).
+4. Run `scripts/verify_integration.py --offline`.

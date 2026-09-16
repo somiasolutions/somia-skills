@@ -133,6 +133,7 @@ def check_instrumentation(root: Path, report: Report) -> None:
     callback_files: list[str] = []
     log_run_files: list[str] = []
     start_run_files: list[str] = []
+    link_files: list[str] = []
     replace_config = False
 
     def _is_app_code(rel: str) -> bool:
@@ -158,6 +159,8 @@ def check_instrumentation(root: Path, report: Report) -> None:
             log_run_files.append(rel)
         if re.search(r"\b(start_run|start_aisa_run)\s*\(", text):
             start_run_files.append(rel)
+        if "link_child_pipeline_run" in text:
+            link_files.append(rel)
         # crude anti-pattern: config={"callbacks": [...]} without merge helpers
         if re.search(r"""config\s*=\s*\{\s*['\"]callbacks['\"]\s*:""", text):
             if "SomiaCallbackHandler" in text or "somia" in text.lower():
@@ -206,6 +209,13 @@ def check_instrumentation(root: Path, report: Report) -> None:
             "instrumentation",
             "no application SomiaCallbackHandler, start_run, or log_run found "
             "(ok if this repo only vendors the SDK)",
+        )
+
+    if link_files:
+        report.add(
+            "ok",
+            "pipeline_link",
+            "link_child_pipeline_run present in: " + ", ".join(link_files[:5]),
         )
 
     if replace_config:

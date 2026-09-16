@@ -6,7 +6,13 @@ Agent Skill that teaches Cursor how to integrate [Somia](https://somia-platform.
 
 | Skill | Description |
 | --- | --- |
-| [integrate-somia](./skills/integrate-somia) | Inspect the current repository and integrate the Somia Python SDK (`somia`). Use when installing or configuring Somia, logging runs, adding `SomiaCallbackHandler` to LangGraph, attaching feedback, uploading historical traces, running evals, or troubleshooting monitoring. |
+| [integrate-somia](./skills/integrate-somia) | Inspect the current repository and integrate the Somia Python SDK (`somia`). Use when installing or configuring Somia, logging runs, adding `SomiaCallbackHandler` to LangGraph, linking child pipeline runs, attaching feedback, uploading historical traces, running evals (including `mapping_input` / ad-hoc `runs=`), or troubleshooting monitoring. |
+
+## Command
+
+| Command | Description |
+| --- | --- |
+| [`/integrate-somia`](./commands/integrate-somia.md) | Invoke the skill on the current repository. |
 
 ## Installation
 
@@ -42,6 +48,7 @@ You need a [Somia](https://somia-platform.com) account and API key:
 ```bash
 export SOMIA_API_KEY=
 export SOMIA_AGENT_SLUG=
+export SOMIA_WORKSPACE_ID=
 export SOMIA_BASE_URL=https://platform.somiasolutions.com/api
 ```
 
@@ -54,9 +61,10 @@ Once installed, the agent will automatically use this skill when relevant — fo
 - Setting up Somia monitoring in a Python agent
 - Wiring `SomiaCallbackHandler` into LangGraph
 - Logging runs with `start_run` / `SomiaTrace` / `log_run`
+- Linking child pipeline runs with `link_child_pipeline_run`
 - Attaching feedback on traces
 - Uploading historical runs
-- Running `client.eval`
+- Running `client.eval` (including `mapping_input` / ad-hoc `runs=`)
 - Troubleshooting an existing Somia integration
 
 You can also invoke it directly in chat with `/integrate-somia`.

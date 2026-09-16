@@ -1,6 +1,6 @@
 # Somia SDK API reference
 
-Documented against SDK version **0.1.0a3** (`pip install somia --pre`).
+Documented against SDK version **0.1.0a4** (`pip install somia --pre`).
 If the installed package differs, prefer `inspect.signature(...)` on the
 installed symbols over this file.
 
@@ -17,6 +17,7 @@ from somia import (
     node_span,
     llm_span,
     tool_span,
+    link_child_pipeline_run,
     clip_text,
 )
 from somia.integrations import SomiaCallbackHandler  # requires somia[langgraph]
@@ -74,6 +75,7 @@ Call `client.close()` when not using a context manager.
 client.log_run(
     *,
     agent_slug: str,
+    workspace_id: int | None = None,  # else SOMIA_WORKSPACE_ID (required)
     input: Any = None,               # prefer JSON-serializable dict
     output: Any = None,              # prefer JSON-serializable dict
     trace: dict | None = None,       # ALWAYS SomiaTrace(...).to_dict() — never the object
@@ -88,8 +90,19 @@ client.log_run(
     metadata: dict | None = None,    # arbitrary key/value properties
     session_id: str | None = None,   # conversation/session key (group turns)
     idempotency_key: str | None = None,
+    caller_pipeline_id: int | None = None,   # parent pipeline (child attribution)
+    caller_agent_slug: str | None = None,
+    caller_run_id: str | None = None,
+    caller_span_id: str | None = None,
 ) -> dict  # run_id, trace_id, pipeline_id, agent_slug, created_at
 ```
+
+`workspace_id` is required for monitoring. Pass it explicitly or set
+`SOMIA_WORKSPACE_ID`. If neither is available, `log_run` raises `ValueError`.
+
+`caller_*` attributes **this** run as a child of whoever called it. Omitted when
+not composing. Unresolvable values are dropped server-side — do not invent IDs.
+See `references/monitoring.md` → "Composing agents".
 
 Wire: `POST /v1/external/runs`.
 
@@ -149,47 +162,66 @@ client.eval(
     *,
     agent_id: str | int,
     profile_id: str,
-    agent_fn: Callable[[Any], Any] | None = None,  # sync only
+    agent_fn: Callable[[Any], Any] | None = None,  # sync only; local mode
     dataset_id: str | None = None,
     set_ids: list[str] | None = None,
     agent_version: str | None = None,
     pipeline_version_id: int | None = None,
     max_workers: int | None = None,  # local eval only; default 4
+    mapping_input: dict | None = None,   # local only; remap dataset → agent_fn
+    input_fields: list | None = None,    # local only; [{name, type, required}]
+    force: bool = True,                  # local only; skip unresolved required
+    runs: list[dict] | None = None,      # ad-hoc mode; already-produced rows
 ) -> EvalRunResult
 ```
 
 | Mode | Required | Behavior |
 | --- | --- | --- |
-| Local (external agent) | `agent_fn`, `dataset_id`, `agent_id` as slug string | Runs `agent_fn` in-process; submits outputs |
-| Server (hosted pipeline) | no `agent_fn`; `set_ids` or `dataset_id`; `agent_id` as pipeline id | Platform executes the pipeline |
+| Local (external agent) | `agent_fn`, `dataset_id`, `agent_id` as slug string | Runs `agent_fn` in-process; optional SDK-side mapping |
+| Ad-hoc | `runs=[...]`, no `agent_fn`; `dataset_id` optional | Submits already-produced `{input, output, ...}` rows |
+| Server (hosted pipeline) | no `agent_fn` / no `runs`; `set_ids` or `dataset_id`; `agent_id` as pipeline id | Platform executes the pipeline |
+
+`mapping_input` / `input_fields` apply **only** to local eval. Platform saved
+mappings are not applied on `POST /v1/external/eval/submit`. Combining mapping
+or `max_workers` with ad-hoc / server eval raises `ValueError`. Combining
+`runs` with `agent_fn` or `set_ids` also raises `ValueError`.
 
 `max_workers` is optional and **local-only**: it caps in-process `ThreadPoolExecutor`
-concurrency when calling `agent_fn`. It is never sent to the platform. Omit it
-unless you need to tune local load / rate limits. Passing it on a server eval
-raises `ValueError`.
+concurrency when calling `agent_fn`. It is never sent to the platform.
 
 ```python
 result = client.eval(...)
 result.wait(timeout=600.0, poll_interval=3.0)
-# result.status, overall_score, processed_examples, failed_examples, results, ...
+# result.status, overall_score, processed_examples, failed_examples, results
+# result.mapping_coverage  # local mapping: {total, resolvable, unresolved_fields}
 ```
 
+If every local example is skipped (`mapping_coverage.resolvable == 0`), nothing
+is POSTed and `wait()` returns immediately (`status="finished"`).
+
 `agent_fn` must be a **sync** `Callable[[Any], Any]` returning JSON-serializable
-output. Wrap async agents yourself.
+output. Wrap async agents yourself. Full mapping / ad-hoc playbook:
+`references/evaluations.md`.
 
 ### Hosted sessions (optional mode)
 
 ```python
 client.sessions.create_session(agent_id: int, *, input_data=None, stream=False,
     pipeline_version="production", trace_enabled=False, test=False,
-    tags=None, environment=None, end_user_id=None, metadata=None)
+    tags=None, environment=None, end_user_id=None, metadata=None,
+    caller_pipeline_id=None, caller_agent_slug=None,
+    caller_run_id=None, caller_span_id=None)
 client.sessions.interact_session(agent_id: int, session_id: str, *, ...)
 client.sessions.run(agent_id: int, *, session_id=None, ...)  # create or continue
 ```
 
 `agent_id` here is a **numeric** internal pipeline id. Not for external monitoring.
 
-Streaming returns an iterator of `StreamEvent` when `stream=True`.
+`session_id` on the response doubles as the created run id — pass it to
+`link_child_pipeline_run` when this session is a child of another agent.
+
+`caller_*` attributes the hosted run back to the calling parent (same semantics
+as `log_run`). Streaming returns an iterator of `StreamEvent` when `stream=True`.
 
 ### `client.traces.feedback` — feedback on a trace
 
@@ -245,19 +277,25 @@ manage those platform resources via the API.
 `client.traces.feedback` **is** in scope when the user asks for feedback or
 historical upload.
 
+`client.pipelines.versions.create(..., input_fields=[{name, type, required}])`
+declares what an **external** agent version accepts. Internal pipelines derive
+fields from the Begin node — the platform rejects setting `input_fields` on
+them. Use only when the user asks to persist that contract.
+
 ## `start_run` / typed spans
 
 Preferred manual monitoring path (no `langchain-core`). Fail-open. Nested
 `start_run` does not submit a second root run.
 
 ```python
-from somia import start_run, node_span, llm_span, tool_span, clip_text
+from somia import start_run, node_span, llm_span, tool_span, link_child_pipeline_run, clip_text
 
 run = start_run(
     input,
     *,
     client: SomiaClient | None = None,          # else SomiaClient.from_env()
     agent_slug: str | None = None,              # else SOMIA_AGENT_SLUG / SOMIA_AGENT_ID
+    workspace_id: int | None = None,            # else SOMIA_WORKSPACE_ID (required)
     agent_version: str | None = None,           # else SOMIA_AGENT_VERSION
     input_mapper: Callable[[Any], Any] | None = None,
     output_mapper: Callable[[Any], Any] | None = None,
@@ -267,6 +305,10 @@ run = start_run(
     metadata: dict | None = None,
     root_span_name: str = "agent",
     environment: str | None = None,             # else SOMIA_ENVIRONMENT
+    caller_pipeline_id: int | None = None,      # child attribution; ignored if nested
+    caller_agent_slug: str | None = None,
+    caller_run_id: str | None = None,
+    caller_span_id: str | None = None,
 )
 
 run.submit_success(output=None, *, tokens: dict | None = None) -> None
@@ -288,6 +330,13 @@ with tool_span(name: str, *, inputs: dict | None = None) as span:
     ...
 
 clip_text(text, limit: int = 2000)  # truncate strings for payloads
+
+link_child_pipeline_run(
+    run_id: str,
+    *,
+    pipeline_id: int | None = None,
+    pipeline_version_id: int | None = None,
+) -> None
 ```
 
 Honors `SOMIA_MONITORING_ENABLED` (default on). Span helpers no-op when no run
@@ -295,7 +344,14 @@ is active. `node_span` sets `node_id`. Exceptions inside a span mark it `ERROR`.
 Call `span.finish(outputs=...)` when you want outputs; otherwise the span
 auto-finishes.
 
+`link_child_pipeline_run` appends a `pipeline_reference` link to the **current**
+span (parent or root). Fail-open no-op if no run is active. Prefer this helper
+over hand-built `Span.add_link` dicts. Nested `start_run` shares the outer run
+and ignores `caller_*` (it never submits its own `log_run`).
+
 Do **not** also attach `SomiaCallbackHandler` on the same execution path.
+`SomiaCallbackHandler` does not emit pipeline-reference links — composition
+requires `start_run` on the parent path. See `references/monitoring.md`.
 
 ## `SomiaTrace` / `Span`
 
@@ -337,7 +393,8 @@ Each span:
   "inputs": <json> | omitted,
   "outputs": <json> | omitted,
   "attributes": { ... },
-  "error": "<string>" | omitted
+  "error": "<string>" | omitted,
+  "links": [ { link... }, ... ]   # omitted when empty
 }
 ```
 
@@ -354,7 +411,8 @@ include at least one finished root span for useful UI, or accept run-only I/O.
 | `tool` | Tool call | Name = tool name; parent should be the node/agent that invoked it |
 | `internal` | Framework noise | Often filtered unless it is the root |
 
-Helpers: `set_node_id`, `set_llm_metadata`, `set_usage`, `set_error`, `finish`.
+Helpers: `set_node_id`, `set_llm_metadata`, `set_usage`, `set_error`, `finish`,
+`add_link`. Prefer `link_child_pipeline_run` over calling `add_link` directly.
 
 Children must set `parent_span_id` to the parent span's `span_id` (use nested
 `trace.span(..., parent_span_id=parent.span_id)`).
@@ -368,6 +426,7 @@ SomiaCallbackHandler(
     *,
     client: SomiaClient,
     agent_slug: str,
+    workspace_id: int | None = None,            # else SOMIA_WORKSPACE_ID (required)
     agent_version: str | None = None,
     metadata: dict | None = None,
     tags: list[str] | None = None,
@@ -376,7 +435,6 @@ SomiaCallbackHandler(
     occurred_at: str | datetime | None = None,
     session_id: str | None = None,
     session_id_mapper: Callable[[dict], str | None] | None = None,
-    ignore_nodes: Sequence[str] | None = None,
     root_input_mapper: Callable[[Any], Any] | None = None,
     root_output_mapper: Callable[[Any], Any] | None = None,
     debug: bool = False,
@@ -386,8 +444,6 @@ SomiaCallbackHandler(
 - Requires `pip install "somia[langgraph]"`.
 - `raise_error = False` — monitoring failures do not fail the agent.
 - On root chain end/error, submits via `client.log_run` on a background thread.
-- `ignore_nodes` filters out specific node names (for example, framework middleware
-  like `ModelCallLimitMiddleware`) from trace spans.
 - **Do not** also call `log_run` for the same graph invocation.
 - Holds mutable per-run state; prefer a fresh handler per concurrent invoke when
   runs may overlap.
@@ -421,6 +477,7 @@ Catch from `somia`:
 | `SOMIA_BASE_URL` | no | `https://platform.somiasolutions.com/api` |
 | `SOMIA_AGENT_SLUG` | for monitoring | preferred external slug |
 | `SOMIA_AGENT_ID` | legacy | alias for slug in some projects |
+| `SOMIA_WORKSPACE_ID` | for monitoring | required workspace id (integer) |
 | `SOMIA_AGENT_VERSION` | no | version string |
 | `SOMIA_MONITORING_ENABLED` | no | `"true"` / `"false"` |
 | `SOMIA_DATASET_ID` | for local eval | UUID from dashboard |

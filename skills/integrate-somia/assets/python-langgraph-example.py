@@ -84,11 +84,6 @@ def somia_langgraph_callbacks(
             session_id=session_id,
             # Or derive from callback context, e.g. thread_id in metadata/configurable.
             # session_id_mapper=lambda ctx: (ctx.get("metadata") or {}).get("thread_id"),
-            # Optional: hide noisy framework-level nodes from trace analysis UI.
-            ignore_nodes=[
-                "ModelCallLimitMiddleware.before_model",
-                "ModelCallLimitMiddleware.after_model",
-            ],
             # Prefer eval-eligible I/O (replayable input, scorable output) — not full state.
             # If keys / trace depth are non-obvious, ask (or propose + confirm) first.
             # root_input_mapper=lambda payload: payload.get("query", payload) if isinstance(payload, dict) else payload,

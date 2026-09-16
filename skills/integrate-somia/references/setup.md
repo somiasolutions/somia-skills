@@ -9,7 +9,7 @@
 
 ## Install
 
-Default (monitoring via `log_run`, evals, sessions):
+Default (monitoring via `start_run` / `log_run`, evals, sessions):
 
 ```bash
 pip install somia --pre
@@ -18,7 +18,7 @@ pip install somia --pre
 Pin when the project requires reproducibility:
 
 ```bash
-pip install "somia==0.1.0a3"
+pip install "somia==0.1.0a4"
 ```
 
 LangGraph callback integration only:
@@ -57,6 +57,8 @@ Minimum for monitoring:
 
 - `SOMIA_API_KEY`
 - `SOMIA_AGENT_SLUG` (external agents)
+- `SOMIA_WORKSPACE_ID` (integer; required by `log_run` / `start_run` /
+  `SomiaCallbackHandler`)
 
 Optional: `SOMIA_BASE_URL`, `SOMIA_AGENT_VERSION`,
 `SOMIA_MONITORING_ENABLED`.

@@ -4,17 +4,20 @@ description: >-
   Integrates the Somia Python SDK (`somia`) into agent repositories. Use when
   installing or configuring Somia, logging runs with start_run /
   SomiaClient.log_run / SomiaTrace, adding SomiaCallbackHandler to LangGraph,
+  linking child pipeline runs (link_child_pipeline_run, caller_run_id),
   attaching feedback on traces (client.traces.feedback), uploading historical /
-  past runs or traces (backfill), running client.eval, calling hosted Somia
-  sessions, or troubleshooting Somia monitoring. Triggers on Somia,
-  SOMIA_API_KEY, SOMIA_AGENT_SLUG, SomiaClient, SomiaCallbackHandler, SomiaTrace,
-  start_run, SomiaRun, node_span, llm_span, tool_span, feedback, historical
-  upload, backfill, integrate-somia. Do not use for generic LangGraph
-  explanations unrelated to Somia.
+  past runs or traces (backfill), running client.eval (including mapping_input,
+  input_fields, ad-hoc runs=), calling hosted Somia sessions, or troubleshooting
+  Somia monitoring. Triggers on Somia, SOMIA_API_KEY, SOMIA_AGENT_SLUG,
+  SomiaClient, SomiaCallbackHandler, SomiaTrace, start_run, SomiaRun, node_span,
+  llm_span, tool_span, link_child_pipeline_run, caller_pipeline_id,
+  mapping_input, input_fields, feedback, historical upload, backfill,
+  integrate-somia. Do not use for generic LangGraph explanations unrelated to
+  Somia.
 metadata:
   author: somia
   version: "0.1.0"
-  sdk-doc-version: "0.1.0a3"
+  sdk-doc-version: "0.1.0a4"
 ---
 
 # Integrate Somia
@@ -54,9 +57,12 @@ asks — but **shape** monitoring so that path stays open.
   pipelines unless the user explicitly asks to manage those resources via the API.
 - Prefer dataset/profile IDs from the Somia dashboard (or existing env vars).
 - Do not turn this into a general Somia platform API tutorial.
-- Feedback on traces and historical run/trace upload **are in scope** when the
-  user asks — use `references/feedback.md` and
-  `references/historical-upload.md`.
+- Feedback on traces, historical run/trace upload, child-pipeline linking, and
+  eval mapping / ad-hoc `runs=` **are in scope** when the user asks — use
+  `references/feedback.md`, `references/historical-upload.md`,
+  `references/monitoring.md` (composing agents), and `references/evaluations.md`.
+- Declaring `input_fields` on a pipeline version is only in scope when the user
+  wants that contract persisted via the API.
 
 ## Core rules
 
@@ -66,23 +72,28 @@ asks — but **shape** monitoring so that path stays open.
    the installed package (`inspect`) when they differ from this skill.
 4. Pick exactly one primary integration path (see decision table).
 5. One user-visible agent execution → one Somia root run. Do not dual-instrument
-   the same path with both `SomiaCallbackHandler` and `log_run`.
+   the same path with both `SomiaCallbackHandler` and `log_run` / `start_run`.
 6. For manual monitoring prefer `start_run` + `node_span` / `llm_span` /
    `tool_span`. If using raw `log_run`: pass `trace.to_dict()` (never the
    object); set top-level `input`/`output`; use `SUCCESS`/`FAILED` on the run
    and `OK`/`ERROR` on the trace. Read the run construction contract in
    `references/monitoring.md`.
-7. Choose **eval-eligible** run input/output and **debug-useful** traces. Prefer
+7. Calling another Somia agent or hosted pipeline is a **child run**, not a
+   nested `start_run` in the same process. Link it with
+   `link_child_pipeline_run` on the parent span; pass `caller_*` on the child.
+   Nested `start_run` shares the outer run and must not be used as composition.
+   See `references/monitoring.md` → "Composing agents".
+8. Choose **eval-eligible** run input/output and **debug-useful** traces. Prefer
    payloads you could later add to a validation set and replay via `agent_fn`.
    If that mapping is non-obvious, **ask** (or propose a default and confirm).
    Do not dump full application state by default. See `references/monitoring.md`
    → "Eval-eligible I/O and debug-useful traces".
-8. Preserve existing callbacks, config (`thread_id`, checkpointing, tags), and
+9. Preserve existing callbacks, config (`thread_id`, checkpointing, tags), and
    sync / async / streaming behavior.
-9. Never hardcode credentials. Update `.env.example` only with placeholders.
-10. Keep monitoring fail-open: agent execution must continue if Somia is down or
+10. Never hardcode credentials. Update `.env.example` only with placeholders.
+11. Keep monitoring fail-open: agent execution must continue if Somia is down or
     misconfigured (when the chosen API supports it).
-11. Make the integration idempotent: re-running this skill must not duplicate wiring.
+12. Make the integration idempotent: re-running this skill must not duplicate wiring.
 
 ## Identifiers (critical)
 
@@ -121,6 +132,9 @@ agent entry points, and framework imports (`langgraph`, `langchain`).
 | User wants feedback on a trace (thumbs, rating, ground truth) | `client.traces.feedback` after `log_run` | `references/feedback.md`, `references/sdk-api.md` |
 | User wants to upload past / historical runs or traces | Batch `log_run` + optional feedback | `references/historical-upload.md`, `references/feedback.md` |
 | User asks to validate / eval / dataset experiment | `client.eval` | `references/evaluations.md`, `references/sdk-api.md` |
+| Dataset field names ≠ `agent_fn` fields | Local eval + `mapping_input` / `input_fields` | `references/evaluations.md` |
+| Already-produced `{input, output}` rows to score | `client.eval(runs=...)` (ad-hoc) | `references/evaluations.md` |
+| This agent calls another Somia agent / hosted pipeline | `link_child_pipeline_run` + `caller_*` | `references/monitoring.md` (composing agents) |
 | User asks to call a hosted Somia pipeline | `client.sessions.*` | `references/sdk-api.md` (hosted sessions) |
 | Somia already integrated | Verify or repair — do not duplicate | `references/troubleshooting.md` |
 
@@ -153,16 +167,19 @@ agent entry points, and framework imports (`langgraph`, `langchain`).
 - Missing credentials produce documented fail-open or clear errors — no invented keys.
 - No secrets committed.
 - Re-running this skill would not add a second handler or second `log_run` on the same path.
+- Child Somia calls (when applicable) use `link_child_pipeline_run` on the parent
+  span; nested `start_run` was not used as a second root.
 
 ## Final report
 
 Report: integration method selected, **eval-eligible input/output mapping and
-trace depth**, feedback / historical-upload choices when applicable, files
-modified, dependency/version, required env vars, verification commands run,
-checks skipped, and any privacy or duplication risks.
+trace depth**, composition / eval-mapping / ad-hoc / feedback / historical-upload
+choices when applicable, files modified, dependency/version, required env vars,
+verification commands run, checks skipped, and any privacy or duplication risks.
 
 ## Assets and scripts
 
-- Copy-paste templates: `assets/` (including `python-historical-upload-example.py`)
+- Copy-paste templates: `assets/` (including `python-historical-upload-example.py`
+  and `python-pipeline-link-example.py`)
 - Detection: `scripts/detect_repository.py`
 - Verification: `scripts/verify_integration.py --offline` (default) or `--live`

@@ -4,7 +4,7 @@
     {
       "id": "custom-python-agent",
       "prompt": "Add Somia monitoring to this custom Python agent.",
-      "expected": "Uses SomiaTrace + client.log_run; does not add SomiaCallbackHandler or somia[langgraph]."
+      "expected": "Uses start_run + typed spans (not SomiaCallbackHandler or somia[langgraph]). Raw SomiaTrace + log_run only as a low-level escape hatch."
     },
     {
       "id": "log-run-trace-contract",
@@ -64,7 +64,7 @@
     {
       "id": "missing-api-key",
       "prompt": "Integrate Somia monitoring.",
-      "expected": "Documents SOMIA_API_KEY in .env.example; does not invent a real secret."
+      "expected": "Documents SOMIA_API_KEY and SOMIA_WORKSPACE_ID in .env.example; does not invent a real secret."
     },
     {
       "id": "negative-langgraph-explain",
@@ -85,6 +85,31 @@
       "id": "historical-upload-no-trace",
       "prompt": "Upload historical interactions that only have prompt and response — no span trees.",
       "expected": "Uploads via log_run with top-level I/O; uses run-only or a minimal root agent span; does not invent a fake multi-step span tree."
+    },
+    {
+      "id": "compose-child-pipeline",
+      "prompt": "This orchestrator calls another Somia-hosted pipeline. Nest the child run in the parent Monitor trace.",
+      "expected": "Uses start_run on the parent (not SomiaCallbackHandler for the composing hop); calls link_child_pipeline_run inside the child-call span with the hosted session_id; does not use nested start_run as a second root; does not hand-build Span.add_link dicts."
+    },
+    {
+      "id": "compose-not-nested-start-run",
+      "prompt": "Agent A calls agent B in the same Python process. Log both as Somia runs.",
+      "expected": "Does not treat nested start_run as composition (inner shares the outer run). Either one root run with spans, or two agents each with their own start_run/log_run plus link_child_pipeline_run + caller_*."
+    },
+    {
+      "id": "eval-mapping-fields",
+      "prompt": "Run a local Somia eval. Our dataset examples use {q, ticket} but agent_fn expects {question, locale}.",
+      "expected": "Keeps agent_fn as-is; passes mapping_input and/or input_fields on client.eval; does not apply mapping on server eval; prints mapping_coverage."
+    },
+    {
+      "id": "eval-adhoc-runs",
+      "prompt": "We already have a list of {input, output} dicts. Score them with Somia eval — do not re-run the agent.",
+      "expected": "Uses client.eval(runs=...) with no agent_fn; does not pass mapping_input; does not invent validation-set CRUD."
+    },
+    {
+      "id": "eval-mapping-not-on-server",
+      "prompt": "Run a server-side Somia eval of our hosted pipeline and remap dataset fields with mapping_input.",
+      "expected": "Does not pass mapping_input on server eval (local-only). Uses set_ids/dataset_id without agent_fn."
     }
   ]
 }
